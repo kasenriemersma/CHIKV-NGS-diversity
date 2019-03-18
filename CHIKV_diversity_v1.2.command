@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 echo "What is the path to the directory for the output files? e.g. /Path/To/Output"
 
@@ -66,16 +66,16 @@ elif [[ "$variant" = "HIFI" ]]; then
 				reference="CHIKVFLIC06049_G"
 fi
 
-# Merge paired end reads with Flash
-flash -m 100 -M 137 -x 0.019 -o flashmerged_$sample $outputdir/qtatptlf_$read1.fastq $outputdir/qtatptlf_$read2.fastq
+# Merge paired end reads with BBtools
+~/Bioinformatics/bbmap/bbmerge.sh in1=$outputdir/paired_$read1.fastq in2=$outputdir/paired_$read2.fastq out=bbmerge_$sample.fastq qtrim=t trimq=35 minq=35 tno=t minoverlap=50 pfilter=1
 
-fastqc ./flashmerged_$sample.extendedFrags.fastq
+fastqc ./bbmerge_$sample.fastq
 
-# Crop head and tail of merged reads
-java -jar ~/Bioinformatics/Trimmomatic0_36/trimmomatic-0.36.jar SE ./flashmerged_$sample.extendedFrags.fastq flash_crop_$sample.fastq CROP:150 HEADCROP:25
+#Length filter and read quality filter
+~/Bioinformatics/bbmap/bbduk.sh in=$outputdir/bbmerge_$sample.fastq out=bbmerge_lfrq_$sample.fastq maxlength=150 mbq=40
 
 # Normalize depth with BBnorm
-~/Bioinformatics/bbmap/bbnorm.sh in=$outputdir/flash_crop_$sample.fastq out=flash_crop_norm_$sample.fastq target=2000
+~/Bioinformatics/bbmap/bbnorm.sh in=$outputdir/bbmerge_lfrq_$sample.fastq out=bbmerge_norm_$sample.fastq target=2000
 
 mkdir "QC"
 
@@ -84,23 +84,26 @@ mv ./*fastqc* ./QC/
 # Align merged reads with BWA MEM
 bwa index /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta
 
-bwa mem -t 4 /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta $outputdir/flash_crop_norm_$sample.fastq > flash_crop_norm_$sample.bam
+bwa mem -t 4 -B 15 -O 135 /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta $outputdir/bbmerge_norm_$sample.fastq > bbmerge_norm_$sample.bam
 
 # Sort sam by coordinate
-java -jar ~/Bioinformatics/picard_2.18.1/picard.jar SortSam I=$outputdir/flash_crop_norm_$sample.bam O=sorted_flash_crop_norm_$sample.bam SORT_ORDER=coordinate
-
-# Use LoFreq* to identify true variants
-lofreq call -f /Volumes/Coffey_Lab/Kasen/Reference_CHIKV_Sequences/$reference.fasta -o flash_crop_norm_variants_$sample.vcf ./sorted_flash_crop_norm_$sample.bam
-
-# Use SNPdat to characterize variants
-perl /Users/kasenriemersma/snpdat/SNPdat_v1.0.5.pl -i ./flash_crop_norm_variants_$sample.vcf -g /Volumes/Coffey_Lab/Kasen/GTF_files/$reference.txt -f /Volumes/Coffey_Lab/Kasen/Reference_CHIKV_Sequences/$reference.fasta -o flash_crop_norm_snpdat_$sample.txt
+java -jar ~/Bioinformatics/picard_2.18.1/picard.jar SortSam I=$outputdir/bbmerge_norm_$sample.bam O=sorted_bbmerge_norm_$sample.bam SORT_ORDER=coordinate
 
 # Generate nucleotide counts per position
-samtools index -b ./sorted_flash_crop_norm_$sample.bam
+samtools index -b ./sorted_bbmerge_norm_$sample.bam
 
-pysamstats -f /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta -t variation -D 1000000 --format csv --output $outputdir/ntcounts_$sample.csv ./sorted_flash_crop_norm_$sample.bam
+pysamstats -f /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta -t variation -D 1000000 --format csv --output $outputdir/ntcounts_$sample.csv ./sorted_bbmerge_norm_$sample.bam
 
 # Calculate diversity metrics with R
 Rscript /Users/kasenriemersma/Bioinformatics/DiversityMetrics_v1_1.R $outputdir $sample $variant
+
+# Use LoFreq* to identify true variants
+lofreq call -f /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta -o bbmerge_norm_variants_$sample.vcf ./sorted_bbmerge_norm_$sample.bam
+
+# Use SNPdat to characterize variants
+perl /Users/kasenriemersma/Bioinformatics/snpdat/SNPdat_v1.0.5.pl -i ./bbmerge_norm_variants_$sample.vcf -g /Users/kasenriemersma/Bioinformatics/GTF_files/$reference.txt -f /Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta -o bbmerge_norm_snpdat_$sample.txt
+
+# Use SNPgenie to characterize selection
+perl /Users/kasenriemersma/Bioinformatics/SNPGenie-master/snpgenie.pl --vcfformat=2 --snpreport=bbmerge_norm_variants_$sample.vcf --fastafile=/Users/kasenriemersma/Bioinformatics/Reference/$reference.fasta --gtffile=/Users/kasenriemersma/Bioinformatics/GTF_files/$reference.txt
 
 exit 1
